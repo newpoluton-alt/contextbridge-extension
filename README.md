@@ -4,7 +4,7 @@ A Chrome Manifest V3 extension for Windows, macOS, and Linux. Select a word or s
 
 ## Connect the deployed app
 
-The packaged extension defaults to [ContextBridge](https://contextbridge-newpoluton.vercel.app). After loading it in Chrome, choose **Connect to this server**, approve its host permission, then sign in on the website and paste a connection code from Settings. Both server and website addresses use the production origin.
+The packaged extension defaults to [ContextBridge](https://contextbridge-newpoluton.vercel.app). After loading it in Chrome, choose **Connect to this server**, approve its host permission, then sign in on the website and choose **Connect browser extension** in Settings. If the extension has not received server permission yet, it opens its Settings so you can approve access; linking then finishes without pasting a code. The manual code remains available as a fallback. Both server and website addresses use the production origin.
 
 ## Run locally
 
@@ -12,7 +12,7 @@ The packaged extension defaults to [ContextBridge](https://contextbridge-newpolu
 2. In this folder run `npm install`, then `npm run build`.
 3. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose this project's `dist` folder. Pin ContextBridge in the Chrome toolbar.
 4. Open the extension's **Settings**. Set the server to `http://localhost:3000` and website to `http://localhost:5173` (the shipped package defaults to production). Choose **Connect to this server** and allow the requested server access.
-5. Open the website, sign in (or use its explicitly labeled local demo), and create a one-time extension code in **Settings**. Paste the code into the extension. Codes expire after five minutes and are single-use; the resulting connection lasts up to 30 days and can be revoked with **Disconnect**.
+5. Open the website, sign in (or use its explicitly labeled local demo), and choose **Connect browser extension** in **Settings**. The website sends only a short-lived code to the extension; tokens never return to the website. If automatic linking is unavailable, generate a manual code and paste it into the extension. Codes expire after five minutes and are single-use; the resulting connection lasts up to 30 days and can be revoked with **Disconnect**.
 6. On an ordinary webpage, select a short expression and click the toolbar icon, or use **Explore with ContextBridge** in the right-click menu. After activation, selecting text on that page also offers a small **Explore** button.
 
 The server's keyless local demo supports these exact examples. It does not invent answers for other text:
@@ -28,7 +28,7 @@ Choose English as the explanation language; the first two examples have English 
 - A native, browser-resizable side panel keeps the reading visible. Activating the extension also underlines visible reading words with a subtle highlight; new text is handled as the page changes. Tap a word or select a phrase to open a small in-page explanation overlay.
 - Editable expression and context, explicit assistance choice, progressive clues, initial interpretation and feedback, reveal, optional revised interpretation, and an unresolved flag.
 - Earlier saved encounters are offered for comparison beside the current sentence, with their meaning collapsed; they are not assumed to mean the same thing in a new sentence. The overlay’s save icon is active when the exact context and languages are already saved.
-- An optional new-context check hides the explanation while attempting. Requests for hints/reveals and attempt order are recorded. Direct explanations are marked **Not attempted**, not incorrect.
+- An optional new-context check hides the explanation while attempting. The new-context check has separate clue and answer-reveal controls. Requests for hints/reveals and attempt order are recorded. Direct explanations are marked **Not attempted**, not incorrect.
 - Light and dark appearance follow the system. An editable follow-up can be copied back to the original conversation; the learner reviews and sends it.
 - Explicit save, searchable library, reopen and delete. Full spaced review and Anki export are available on the website.
 - Shared chat history, Markdown formatting, code-copy buttons, and grammar follow-ups; custom AI instructions and learning preferences stay synchronized through the API.
@@ -53,6 +53,8 @@ OPENAI_API_KEY=
 ```
 
 The OpenAI variable in this project is deliberately unused. Put the real key in **the web project's `.env`**. Every browser-extension file is inspectable by its user; a bundled key would not be private. The extension authenticates to the web API with a revocable, user-scoped token, and only the server calls OpenAI. Its token is stored in `chrome.storage.local`, restricted to trusted extension pages, and is never sent to webpage scripts.
+
+Automatic website pairing accepts only the exact production origin and the exact local development origins on port 5173. Its server destination is fixed by the extension, never supplied by a webpage. The external message can contain only the one-time code. Pairing clears prior-account drafts, chats, and overlays; an account token never crosses the external message boundary. Unsaved preference edits survive focus changes, and saving sends only the fields you changed.
 
 Only the two explicitly public URL variables are read by the build. Rebuild after changing their defaults, or change server and website addresses in the extension's Settings without rebuilding. Production addresses must use HTTPS.
 

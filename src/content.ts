@@ -192,6 +192,7 @@ if (!window.__contextBridgeAttached) {
     });
   });
   chrome.runtime.onMessage.addListener((message, _sender, respond) => {
+    if (message.type === 'accountChanged') { current = undefined; latest = undefined; feedback = ''; hide(); respond({ ok: true }); return false; }
     if (message.type !== 'capture') return false;
     const result = readSelection(message.fallback);
     if (result) { void chrome.runtime.sendMessage({ type: 'selection', selection: result }); if (anchor) openPopup(result); }

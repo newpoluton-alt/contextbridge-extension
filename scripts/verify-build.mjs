@@ -8,7 +8,7 @@ const extensionId = createHash('sha256').update(Buffer.from(manifest.key, 'base6
 assert.equal(extensionId, 'dfpafpdmlhafhpknaijeeelhdpbkiogk', 'Stable ID must match the server origin allowlist.');
 assert.ok(!manifest.host_permissions?.length, 'All server access must be requested explicitly.');
 assert.ok(!manifest.content_scripts, 'No blanket page collection on install.');
-assert.ok(!manifest.externally_connectable, 'Website scripts must not receive connection tokens.');
+assert.deepEqual(manifest.externally_connectable?.matches, ['https://contextbridge-newpoluton.vercel.app/*', 'http://localhost/*', 'http://127.0.0.1/*'], 'Only the official website and local development may request scoped pairing.');
 const paths = [];
 async function walk(path) { for (const name of await readdir(path)) { const next = join(path, name); if ((await stat(next)).isDirectory()) await walk(next); else paths.push(next); } }
 await walk('dist');

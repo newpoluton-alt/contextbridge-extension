@@ -18,6 +18,8 @@ type Draft = {
   followupQuestion?: string;
 };
 let preferences: Settings | undefined;
+let settingsDirty = false;
+let accountEpoch = 0;
 let draft: Draft = freshDraft();
 let config: PublicConfig | undefined;
 let connected = false;
@@ -42,7 +44,7 @@ async function send<T>(message: Record<string, unknown>): Promise<T> {
   if (!reply?.ok) throw new Error(reply && !reply.ok ? reply.error : 'The extension restarted. Please reopen the panel.');
   return reply.data;
 }
-const api = <T>(path: string, method = 'GET', body?: unknown) => send<T>({ type: 'api', path, method, body });
+async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> { const epoch = accountEpoch; const value = await send<T>({ type: 'api', path, method, body }); if (epoch !== accountEpoch) throw new Error('Your account changed. Please try again.'); return value; }
 
 function notify(message: string, error = false) {
   show(error ? 'notice' : 'error', false);
@@ -144,10 +146,11 @@ async function switchView(view: View) {
 }
 
 async function refreshConnection() {
-  const info = await send<{ apiUrl: string; webUrl: string; connected: boolean }>({ type: 'connection' });
+  const info = await send<{ apiUrl: string; webUrl: string; connected: boolean; pendingPair?: boolean }>({ type: 'connection' });
   input('api-url').value = info.apiUrl; input('web-url').value = info.webUrl;
   connected = info.connected;
   show('disconnect', connected);
+  if (info.pendingPair) notify('Your website connection is ready. Click “Connect to this server” to approve access and finish linking your account.');
   const hasPermission = await chrome.permissions.contains({ origins: [hostPattern(info.apiUrl)] });
   if (!hasPermission) return;
   config = await api<PublicConfig>('/api/config');
@@ -156,7 +159,8 @@ async function refreshConnection() {
   if (connected) await loadPreferences();
 }
 
-async function loadPreferences() {
+async function loadPreferences(force = false) {
+  if (settingsDirty && !force) return;
   preferences = await api<Settings>('/api/settings');
   input('settings-language').value = preferences.learningLanguage;
   input('settings-translation').value = preferences.translationLanguage;
@@ -307,13 +311,19 @@ $('try-check').addEventListener('click', () => {
 });
 $('check-help').addEventListener('click', () => {
   if (!draft.result) return;
-  draft.assistance.push('check_answer_revealed'); text('check-feedback', draft.result.explanation.check.answer); show('check-feedback'); persist();
+  const part = draft.result.explanation.partOfSpeech.toLowerCase();
+  const clue = part.includes('verb') ? 'Find who or what performs the action, then look at what follows the expression. Does the sentence describe an action, a state, or a completed result?'
+    : part.includes('noun') ? 'Look at the article, adjective, or verb linked to this expression. What kind of thing would fit that grammatical role?'
+    : part.includes('adjective') ? 'Find the noun this expression describes. Use nearby contrasts or examples to narrow down the property.'
+    : `Look immediately before and after “${draft.selection.expression}”. Identify one clue about its role, then try a short paraphrase that fits the new sentence.`;
+  draft.assistance.push('check_help'); text('check-feedback', clue); show('check-feedback'); persist();
 });
+$('check-reveal').addEventListener('click', () => { if (!draft.result) return; draft.assistance.push('check_answer_revealed'); text('check-feedback', draft.result.explanation.check.answer); show('check-feedback'); persist(); });
 $('submit-check').addEventListener('click', () => { void run(async () => {
   syncInputs(); if (!draft.checkResponse) throw new Error('Write an interpretation, request help, or skip this activity.');
   if (!draft.result) return;
   const response = await api<{ feedback: string }>('/api/feedback', 'POST', { expression: draft.selection.expression, sentence: draft.result.explanation.check.sentence, interpretation: draft.checkResponse, explanation: draft.result.explanation, kind: 'check' });
-  draft.checked = true; draft.assistance.push('check_attempt'); draft.assistance.push(draft.assistance.includes('check_answer_revealed') ? 'check_attempt_after_help' : 'check_attempt_before_additional_help');
+  draft.checked = true; draft.assistance.push('check_attempt'); draft.assistance.push(draft.assistance.some((event) => event === 'check_help' || event === 'check_answer_revealed') ? 'check_attempt_after_help' : 'check_attempt_before_additional_help');
   text('check-feedback', response.feedback); show('check-feedback'); persist();
 }); });
 $('skip-check').addEventListener('click', () => { show('understanding-check', false); renderLearning(); });
@@ -333,8 +343,9 @@ $('connection-form').addEventListener('submit', (event) => {
   const permission = chrome.permissions.request({ origins: [hostPattern(apiUrl)] });
   void run(async () => {
     if (!(await permission)) throw new Error('Server permission was declined. You can connect again whenever you’re ready.');
-    await send({ type: 'configure', apiUrl, webUrl }); await refreshConnection();
-    notify('Server connected. Create a one-time code in the website Settings, then paste it below to link your account.');
+    await send({ type: 'configure', apiUrl, webUrl });
+    const pairing = await send<{ connected: boolean }>({ type: 'completePair' }); await refreshConnection();
+    notify(pairing.connected ? 'Account connected directly from the website. Your library and chats are ready.' : 'Server connected. Connect directly from the website Settings, or paste a one-time code below.');
   });
 });
 $('pair-form').addEventListener('submit', (event) => { event.preventDefault(); void run(async () => {
@@ -342,14 +353,18 @@ $('pair-form').addEventListener('submit', (event) => { event.preventDefault(); v
   await refreshConnection(); notify('Account connected. Your saved expressions, chats, and preferences are ready.');
 }); });
 $('disconnect').addEventListener('click', () => { void run(async () => {
-  await send({ type: 'disconnect' }); draft = freshDraft(); currentChat = undefined; setForm(); await refreshConnection(); notify('This extension is disconnected.');
+  await send({ type: 'disconnect' }); draft = freshDraft(); currentChat = undefined; preferences = undefined; settingsDirty = false; $<HTMLFormElement>('settings-form').reset(); setForm(); await refreshConnection(); notify('This extension is disconnected.');
 }); });
+$('settings-form').addEventListener('input', () => { settingsDirty = true; });
 $('settings-form').addEventListener('submit', (event) => { event.preventDefault(); void run(async () => {
-  preferences = await api<Settings>('/api/settings', 'PUT', {
+  const values = {
     learningLanguage: input('settings-language').value.trim(), translationLanguage: input('settings-translation').value.trim(),
-    mode: input('settings-mode').value, instructions: input('instructions').value.trim(),
-  });
-  await loadPreferences(); notify('Preferences saved and shared with the website.');
+    mode: input('settings-mode').value as Mode, instructions: input('instructions').value.trim(),
+  };
+  const changes = Object.fromEntries(Object.entries(values).filter(([key, value]) => value !== preferences?.[key as keyof Settings]));
+  if (!Object.keys(changes).length) { settingsDirty = false; notify('Your preferences are already saved.'); return; }
+  preferences = await api<Settings>('/api/settings', 'PUT', changes); settingsDirty = false;
+  await loadPreferences(true); notify('Preferences saved and shared with the website.');
 }); });
 $('refresh-usage').addEventListener('click', () => { void run(async () => {
   const usage = await api<{ requests: number; inputTokens: number; outputTokens: number; cachedInputTokens: number; reservedTokens: number; requestLimit: number; tokenLimit: number }>('/api/usage');
@@ -394,6 +409,13 @@ $('chat-form').addEventListener('submit', (event) => { event.preventDefault(); v
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
+  if (changes.connectionChanged?.newValue) {
+    accountEpoch++; revision++; currentChat = undefined; chats = []; library = []; preferences = undefined; settingsDirty = false;
+    draft = freshDraft(); input('chat-input').value = ''; $('library-list').replaceChildren();
+    $<HTMLSelectElement>('chat-history').replaceChildren(new Option('New conversation', ''));
+    $<HTMLFormElement>('settings-form').reset(); setForm(); renderChat();
+    void refreshConnection().then(() => { if (activeView === 'library' || activeView === 'chat') return switchView(activeView); }).catch((error) => notify(error.message, true));
+  } else if (changes.pendingPair?.newValue) void refreshConnection().catch((error) => notify(error.message, true));
   if (changes.selection?.newValue || (changes.draft?.newValue && changes.panelTarget?.newValue)) {
     const selection = (changes.selection?.newValue || (changes.draft.newValue as Draft).selection) as Selection;
     if (selection.capturedAt === draft.selection.capturedAt && !changes.panelTarget?.newValue) return;

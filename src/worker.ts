@@ -1,15 +1,57 @@
 import { hostPattern, normalizeOrigin, validateSelection } from './selection';
 import type { Connection, Encounter, Lookup, Mode, Reply, Selection, Settings } from './types';
 import { matchingEncounter, overlayAction, type OverlayDraft } from './overlay';
+import { externalPairCode, externalPairTarget } from './pairing';
 
 const defaults: Connection = { apiUrl: __API_URL__, webUrl: __WEB_URL__ };
+type PendingPair = { apiUrl: string; webUrl: string; code: string; expiresAt: number };
+let accountEpoch = 0;
 void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 
 async function connection(): Promise<Connection> {
+  const pending = await pendingPair();
+  if (pending) return { apiUrl: pending.apiUrl, webUrl: pending.webUrl };
   const stored = await chrome.storage.local.get('connection');
   return { ...defaults, ...(stored.connection as Partial<Connection> | undefined) };
 }
+
+async function pendingPair(): Promise<PendingPair | undefined> {
+  const value = (await chrome.storage.session.get('pendingPair')).pendingPair as PendingPair | undefined;
+  if (value && value.expiresAt > Date.now()) return value;
+  if (value) await chrome.storage.session.remove('pendingPair');
+}
+
+async function pairAt(target: { apiUrl: string; webUrl: string }, code: string) {
+  if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) throw new Error('Approve server access in the extension Settings first.');
+  const response = await fetch(`${normalizeOrigin(target.apiUrl)}/api/extension/exchange`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
+    credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20000),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(typeof result.message === 'string' ? result.message.slice(0, 300) : 'Could not connect. Generate a fresh code on the website.');
+  if (typeof result.token !== 'string' || !/^cb_ext_[A-Za-z0-9_-]{20,200}$/.test(result.token)) throw new Error('The server returned an invalid connection token.');
+  accountEpoch++;
+  await chrome.storage.session.clear();
+  await chrome.storage.local.set({ connection: { apiUrl: target.apiUrl, webUrl: target.webUrl, token: result.token } });
+  await chrome.storage.session.set({ connectionChanged: Date.now() });
+  for (const tab of await chrome.tabs.query({})) if (tab.id) void chrome.tabs.sendMessage(tab.id, { type: 'accountChanged' }).catch(() => {});
+}
+
+chrome.runtime.onMessageExternal.addListener((message, sender, respond) => {
+  void (async () => {
+    const target = externalPairTarget(sender.url || '', sender.origin, sender.frameId);
+    const code = externalPairCode(message);
+    if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) {
+      await chrome.storage.session.set({ pendingPair: { ...target, code, expiresAt: Date.now() + 4 * 60_000 } });
+      await chrome.runtime.openOptionsPage();
+      return { ok: true, status: 'permission_required', message: 'Finish linking in the opened extension Settings: click Connect to this server and approve access. No code pasting is needed.' };
+    }
+    await pairAt(target, code);
+    return { ok: true, status: 'connected', message: 'Your ContextBridge account is connected to the extension.' };
+  })().then(respond).catch((error) => respond({ ok: false, error: error instanceof Error ? error.message : 'Could not connect the extension.' }));
+  return true;
+});
 
 chrome.runtime.onInstalled.addListener((details) => {
   chrome.contextMenus.removeAll(() => {
@@ -78,23 +120,25 @@ async function pageDraft(sender: chrome.runtime.MessageSender, ticket: unknown):
   return stored;
 }
 
-async function storeOverlay(draft: OverlayDraft) { await chrome.storage.session.set({ [`overlay:${draft.tabId}`]: draft }); }
+async function storeOverlay(draft: OverlayDraft, epoch = accountEpoch) { if (epoch !== accountEpoch) throw new Error('Your account changed. Explore this expression again.'); await chrome.storage.session.set({ [`overlay:${draft.tabId}`]: draft }); }
 
 /** Page scripts get only these scoped learning actions, never arbitrary API access or tokens. */
 async function pageAction(message: Record<string, unknown>, sender: chrome.runtime.MessageSender) {
+  const epoch = accountEpoch;
+  const scopedRequest = (path: string, method = 'GET', body?: unknown) => { if (epoch !== accountEpoch) throw new Error('Your account changed. Explore this expression again.'); return request(path, method, body); };
   const origin = pageOrigin(sender);
   if (message.type === 'pagePreferences') {
-    const settings = await request('/api/settings') as Settings;
+    const settings = await scopedRequest('/api/settings') as Settings;
     return { mode: settings.mode, learningLanguage: settings.learningLanguage, translationLanguage: settings.translationLanguage };
   }
   if (message.type === 'pageExplore') {
     const value = message.selection as Partial<Selection> | undefined;
     if (!value || typeof value.expression !== 'string' || typeof value.sentence !== 'string') throw new Error('Select an expression and its sentence.');
     validateSelection(value.expression, value.sentence);
-    const settings = await request('/api/settings') as Settings;
+    const settings = await scopedRequest('/api/settings') as Settings;
     const mode: Mode = message.mode === 'direct' ? 'direct' : message.mode === 'guided' ? 'guided' : settings.mode;
     const selection: Selection = { expression: value.expression.trim(), sentence: value.sentence.trim(), sourceUrl: /^https?:/.test(sender.url!) ? sender.url!.slice(0, 2048) : '', title: String(sender.tab?.title || '').slice(0, 200), capturedAt: Date.now() };
-    const result = await request('/api/lookup', 'POST', { expression: selection.expression, sentence: selection.sentence, language: settings.learningLanguage, translationLanguage: settings.translationLanguage, mode }) as Lookup;
+    const result = await scopedRequest('/api/lookup', 'POST', { expression: selection.expression, sentence: selection.sentence, language: settings.learningLanguage, translationLanguage: settings.translationLanguage, mode }) as Lookup;
     const draft: OverlayDraft = {
       ticket: crypto.randomUUID(), tabId: sender.tab!.id!, origin, expiresAt: Date.now() + 20 * 60_000,
       selection, result, mode, language: settings.learningLanguage, translationLanguage: settings.translationLanguage,
@@ -102,35 +146,36 @@ async function pageAction(message: Record<string, unknown>, sender: chrome.runti
       revealed: mode === 'direct', hints: 0, assistance: mode === 'direct' ? ['answer_revealed'] : [],
       initialInterpretation: '', revisedInterpretation: '', unresolved: false, checkResponse: '', attemptHadHelp: false, checked: false,
     };
-    await storeOverlay(draft);
+    await storeOverlay(draft, epoch);
     return draft;
   }
   const draft = await pageDraft(sender, message.ticket);
   if (message.type === 'pageFeedback') {
     if (typeof message.interpretation !== 'string' || !message.interpretation.trim() || message.interpretation.length > 2000) throw new Error('Write a short interpretation first.');
     if (!draft.initialInterpretation) { draft.initialInterpretation = message.interpretation.trim(); draft.attemptHadHelp = draft.assistance.length > 0; draft.assistance.push('initial_attempt'); }
-    await storeOverlay(draft);
-    const response = await request('/api/feedback', 'POST', { expression: draft.selection.expression, sentence: draft.selection.sentence, interpretation: message.interpretation.trim(), explanation: draft.result.explanation, kind: 'interpretation' });
-    overlayAction(draft, 'reveal'); await storeOverlay(draft);
+    await storeOverlay(draft, epoch);
+    const response = await scopedRequest('/api/feedback', 'POST', { expression: draft.selection.expression, sentence: draft.selection.sentence, interpretation: message.interpretation.trim(), explanation: draft.result.explanation, kind: 'interpretation' });
+    overlayAction(draft, 'reveal'); await storeOverlay(draft, epoch);
     return { draft, feedback: response.feedback };
   }
   if (message.type === 'pageAction') {
     overlayAction(draft, String(message.action), typeof message.value === 'string' ? message.value : undefined);
-    await storeOverlay(draft); return draft;
+    await storeOverlay(draft, epoch); return draft;
   }
   if (message.type === 'pageSave') {
-    const saved = await request('/api/encounters', 'POST', {
+    const saved = await scopedRequest('/api/encounters', 'POST', {
       expression: draft.selection.expression, sentence: draft.selection.sentence, sourceUrl: draft.selection.sourceUrl,
       language: draft.language, translationLanguage: draft.translationLanguage, mode: draft.mode,
       explanation: draft.result.explanation, initialInterpretation: draft.initialInterpretation, revisedInterpretation: draft.revisedInterpretation,
       assistance: draft.assistance, checkResponse: draft.checkResponse, unresolved: draft.unresolved,
       attemptStatus: draft.initialInterpretation ? draft.attemptHadHelp ? 'assisted' : 'attempted' : 'not_attempted',
     }) as Encounter;
-    draft.savedId = saved.id; await storeOverlay(draft); return { id: saved.id };
+    draft.savedId = saved.id; await storeOverlay(draft, epoch); return { id: saved.id };
   }
   if (message.type === 'pageContinue') {
     if (typeof message.revision === 'string') overlayAction(draft, 'revision', message.revision);
     if (typeof message.unresolved === 'boolean') overlayAction(draft, 'unresolved', String(message.unresolved));
+    if (epoch !== accountEpoch) throw new Error('Your account changed. Explore this expression again.');
     const snapshot = { ...draft, draftInterpretation: typeof message.interpretation === 'string' ? message.interpretation.slice(0, 2000) : draft.initialInterpretation };
     await chrome.storage.session.set({ draft: snapshot, selection: draft.selection, panelTarget: message.target === 'chat' ? 'chat' : 'explore' });
     return { ok: true };
@@ -140,6 +185,7 @@ async function pageAction(message: Record<string, unknown>, sender: chrome.runti
 chrome.tabs.onRemoved.addListener((tabId) => { void chrome.storage.session.remove(`overlay:${tabId}`); });
 
 async function request(path: string, method = 'GET', body?: unknown) {
+  const epoch = accountEpoch;
   if (!allowedPath(path) || !['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
     throw new Error('Unsupported request.');
   }
@@ -150,6 +196,7 @@ async function request(path: string, method = 'GET', body?: unknown) {
   if (!(await chrome.permissions.contains({ origins: [hostPattern(config.apiUrl)] }))) {
     throw new Error('Connect to your server in Settings to allow access.');
   }
+  if (epoch !== accountEpoch) throw new Error('Your account changed. Please retry this action.');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (config.token) headers.Authorization = `Bearer ${config.token}`;
   let response: Response;
@@ -187,20 +234,24 @@ chrome.runtime.onMessage.addListener((message, sender, respond: (value: Reply<un
     switch (message.type) {
       case 'connection': {
         const c = await connection();
-        return { apiUrl: c.apiUrl, webUrl: c.webUrl, connected: Boolean(c.token) };
+        return { apiUrl: c.apiUrl, webUrl: c.webUrl, connected: Boolean(c.token), pendingPair: Boolean(await pendingPair()) };
       }
       case 'configure': {
         const previous = await connection();
         const next: Connection = { apiUrl: normalizeOrigin(message.apiUrl), webUrl: normalizeOrigin(message.webUrl) };
         if (next.apiUrl === previous.apiUrl) next.token = previous.token;
         await chrome.storage.local.set({ connection: next });
+        const pending = await pendingPair();
+        if (pending && (pending.apiUrl !== next.apiUrl || pending.webUrl !== next.webUrl)) await chrome.storage.session.remove('pendingPair');
         return { ok: true };
       }
+      case 'completePair': {
+        const pending = await pendingPair(); if (!pending) return { connected: false };
+        await pairAt(pending, pending.code); return { connected: true };
+      }
       case 'pair': {
-        const result = await request('/api/extension/exchange', 'POST', { code: String(message.code || '').trim() });
-        if (typeof result.token !== 'string' || !result.token.startsWith('cb_ext_')) throw new Error('The server returned an invalid connection token.');
         const c = await connection();
-        await chrome.storage.local.set({ connection: { ...c, token: result.token } });
+        await pairAt({ apiUrl: c.apiUrl, webUrl: c.webUrl }, String(message.code || '').trim());
         return { ok: true };
       }
       case 'disconnect': {
@@ -209,7 +260,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond: (value: Reply<un
         if (c.token) await request('/api/extension/token', 'DELETE');
         delete c.token;
         await chrome.storage.local.set({ connection: c });
-        await chrome.storage.session.remove(['draft', 'selection']);
+        await chrome.storage.session.remove(['draft', 'selection', 'pendingPair']);
         return { ok: true };
       }
       case 'api': return request(String(message.path || ''), message.method, message.body);

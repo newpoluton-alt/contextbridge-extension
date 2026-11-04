@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "ContextBridge · Read, notice, understand",
+  "name": "ContextBridge \u00b7 Read, notice, understand",
   "description": "Explore an expression in context, save the encounter, and revisit it later. Connects to your ContextBridge account.",
   "version": "0.1.0",
   "minimum_chrome_version": "121",
@@ -43,5 +43,12 @@
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
-  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkUrkoi76a5yhrwyZ9gduIJ/1h1TNy836021QhSd63PWrQ/23yBwfAEYPLITRjLvUgYgn6zEW0aIamqSgn5jvlxlSjFIKdmBFjattUJYI0Rnj98DYU/HGFu9sQUmbMHeRQr2Hyrr4SaFTxSvckWOn2174UlxHoKrAxr/wTILc8JD6rZsi87veYOPsqBNAu/FUZ/tY79laoqheG0z0nsy7EP0cAvROLjRJ3Lw6kYLOzAUo3dKbJihO/kZNKd8R8kr70lrCLUnpmUvnI5zbvQQZJ8Q6o+TjVDsorFeS8n3vWCT/lLwSWTZKIFQRzfCJpFlSpKd4i3WjNsG3/dimo/zZ+QIDAQAB"
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAkUrkoi76a5yhrwyZ9gduIJ/1h1TNy836021QhSd63PWrQ/23yBwfAEYPLITRjLvUgYgn6zEW0aIamqSgn5jvlxlSjFIKdmBFjattUJYI0Rnj98DYU/HGFu9sQUmbMHeRQr2Hyrr4SaFTxSvckWOn2174UlxHoKrAxr/wTILc8JD6rZsi87veYOPsqBNAu/FUZ/tY79laoqheG0z0nsy7EP0cAvROLjRJ3Lw6kYLOzAUo3dKbJihO/kZNKd8R8kr70lrCLUnpmUvnI5zbvQQZJ8Q6o+TjVDsorFeS8n3vWCT/lLwSWTZKIFQRzfCJpFlSpKd4i3WjNsG3/dimo/zZ+QIDAQAB",
+  "externally_connectable": {
+    "matches": [
+      "https://contextbridge-newpoluton.vercel.app/*",
+      "http://localhost/*",
+      "http://127.0.0.1/*"
+    ]
+  }
 }
