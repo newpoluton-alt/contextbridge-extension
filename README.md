@@ -1,12 +1,31 @@
-# ContextBridge browser extension
+<p align="center">
+  <img src=".github/assets/contextbridge.svg" alt="ContextBridge icon" width="72" height="72" />
+</p>
+
+<h1 align="center">ContextBridge · Browser Extension</h1>
+
+<p align="center">A little context. A world of possibility.<br />Language learning, right beside the words you read.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Chrome-Manifest_V3-4285F4?style=flat&amp;logo=googlechrome&amp;logoColor=white" alt="Chrome Manifest V3" />
+  <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat&amp;logo=typescript&amp;logoColor=white" alt="TypeScript" />
+  <img src="https://img.shields.io/badge/PDF.js-Bundled_reader-E85D3F?style=flat" alt="Bundled PDF.js reader" />
+  <img src="https://img.shields.io/badge/API_keys-Server_only-386A59?style=flat" alt="API keys remain on the server" />
+</p>
+
+<p align="center">
+  <a href="https://contextbridge-newpoluton.vercel.app">🌐 Open the app</a> ·
+  <a href="https://contextbridge-newpoluton.vercel.app/downloads/contextbridge-extension.zip">📦 Download extension</a> ·
+  <a href="https://github.com/newpoluton-alt/contextbridge-web">↗ Web repository</a>
+</p>
 
 A Chrome Manifest V3 extension for Windows, macOS, and Linux. Select a word or short expression, confirm its surrounding sentence, choose guided or direct help, and save the encounter to the same library used by the web app.
 
-## Connect the deployed app
+## 🔗 Connect the deployed app
 
 The packaged extension defaults to [ContextBridge](https://contextbridge-newpoluton.vercel.app). After loading it in Chrome, choose **Connect to this server**, approve its host permission, then sign in on the website and choose **Connect browser extension** in Settings. If the extension has not received server permission yet, it opens its Settings so you can approve access; linking then finishes without pasting a code. The manual code remains available as a fallback. Both server and website addresses use the production origin.
 
-## Run locally
+## ⚡ Run locally
 
 1. Start the separate `web` project (`npm run dev` in that folder).
 2. In this folder run `npm install`, then `npm run build`.
@@ -23,7 +42,7 @@ The server's keyless local demo supports these exact examples. It does not inven
 
 Choose English as the explanation language; the first two examples have English as their reading language, and the third has German. Set the OpenAI key in the web project to enable live AI for other selections.
 
-## Features
+## ✨ Features
 
 - A native, browser-resizable side panel keeps the reading visible. Activating the extension also underlines visible reading words with a subtle highlight; new text is handled as the page changes. Tap a word or select a phrase to open a small in-page explanation overlay.
 - Editable expression and context, explicit assistance choice, progressive clues, initial interpretation and feedback, reveal, optional revised interpretation, and an unresolved flag.
@@ -36,13 +55,13 @@ Choose English as the explanation language; the first two examples have English 
 - Session drafts survive panel reopening within the current browser session. They are not uploaded automatically.
 - A manually refreshed daily AI-usage summary in Settings shows the shared request/token budget. Opening the extension, switching tabs, hints, and answer reveals do not generate extra AI requests. Only explicit exploration, feedback, chat, or saving new searchable context can request AI work; repeated requests can use the server's cache.
 
-## Browser boundaries
+## 🧭 Browser boundaries
 
 Chrome's built-in PDF viewer, browser settings, Chrome Web Store pages, and some embedded cross-origin frames cannot be injected into. Use the bundled PDF reader for local PDFs, or enter the expression and sentence manually. Scanned PDFs require OCR, which is not included. This version targets Chrome 121+ and has not been adapted to Firefox's sidebar API. The first release supports desktop Chrome on all three operating systems; mobile Chrome does not install desktop extensions.
 
 Underlines are activated only on the page where you invoke the extension. They use browser highlights rather than rewriting page text. Highlighting and tapping perform no AI lookup: the overlay asks you to confirm the expression, sentence, and assistance choice first. Only visible reading text and nearby scroll regions are highlighted, and the highlights update as you scroll. Browser controls, editable fields, links, and code are not intercepted.
 
-## API keys and environment files
+## 🔐 API keys and environment files
 
 Both `.env` and `.env.example` exist. `.env` is ignored by Git and never copied to `dist` or the ZIP archive.
 
@@ -58,7 +77,7 @@ Automatic website pairing accepts only the exact production origin and the exact
 
 Only the two explicitly public URL variables are read by the build. Rebuild after changing their defaults, or change server and website addresses in the extension's Settings without rebuilding. Production addresses must use HTTPS.
 
-## Connect a deployed website
+## 🌐 Connect a deployed website
 
 1. Deploy the web app and configure its server-side credentials using that project's deployment workflow.
 2. In `chrome://extensions`, copy ContextBridge's extension ID. Add that ID to the web server's `EXTENSION_IDS` environment variable (comma-separated if more than one) and redeploy. Local demo mode permits local Chrome extension origins automatically; production requires the explicit allowlist.
@@ -66,7 +85,7 @@ Only the two explicitly public URL variables are read by the build. Rebuild afte
 
 This package includes a fixed public manifest key, so its unpacked ID remains **dfpafpdmlhafhpknaijeeelhdpbkiogk** across install locations and operating systems. No private signing key is shipped. If a future Chrome Web Store listing receives a different key/ID, update the server allowlist for that release.
 
-## Checks and packaging
+## 📦 Checks and packaging
 
 ```sh
 npm run check
@@ -79,7 +98,7 @@ The checks cover selected-occurrence extraction, short phrases, non-Latin punctu
 
 The build bundles PDF.js and all its worker/font/CMap/WASM assets locally, along with its license. No remotely hosted extension code or third-party fonts are loaded.
 
-## Design references
+## 📚 Design references
 
 - [Chrome Side Panel API](https://developer.chrome.com/docs/extensions/reference/api/sidePanel)
 - [Chrome activeTab permission](https://developer.chrome.com/docs/extensions/develop/concepts/activeTab)
