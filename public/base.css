@@ -1,0 +1,2 @@
+/* Local system fonts only: the extension does not make third-party font requests. */
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important;animation:none!important}}

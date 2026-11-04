@@ -1,0 +1,25 @@
+{
+  "name": "contextbridge-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Contextual language learning alongside the page you are reading.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/*.test.ts && node scripts/verify-build.mjs",
+    "package": "npm run check && npm run build && npm test && node scripts/package.mjs"
+  },
+  "dependencies": {
+    "dompurify": "^3.3.0",
+    "marked": "^17.0.0",
+    "pdfjs-dist": "^6.5.438"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.3.7",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  },
+  "engines": { "node": ">=22.13.0" }
+}
