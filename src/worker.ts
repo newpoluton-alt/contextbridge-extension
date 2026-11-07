@@ -1,17 +1,18 @@
 import { hostPattern, normalizeOrigin, validateSelection } from './selection';
-import type { Connection, Encounter, Lookup, Mode, Reply, Selection, Settings } from './types';
+import type { Account, Connection, Encounter, Lookup, Mode, Reply, Selection, Settings } from './types';
 import { matchingEncounter, overlayAction, type OverlayDraft } from './overlay';
-import { externalPairCode, externalPairTarget } from './pairing';
+import { externalAccountMessage, externalPairCode, externalPairTarget } from './pairing';
 
 const defaults: Connection = { apiUrl: __API_URL__, webUrl: __WEB_URL__ };
-type PendingPair = { apiUrl: string; webUrl: string; code: string; expiresAt: number };
+type PendingPair = { apiUrl: string; webUrl: string; code: string; accountId?: string; expiresAt: number };
 let accountEpoch = 0;
+let connectionOperation = 0;
+let activePair: { operation: number; accountId?: string; apiUrl: string } | undefined;
+let connectionMutation: Promise<unknown> = Promise.resolve();
 void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 
 async function connection(): Promise<Connection> {
-  const pending = await pendingPair();
-  if (pending) return { apiUrl: pending.apiUrl, webUrl: pending.webUrl };
   const stored = await chrome.storage.local.get('connection');
   return { ...defaults, ...(stored.connection as Partial<Connection> | undefined) };
 }
@@ -22,32 +23,155 @@ async function pendingPair(): Promise<PendingPair | undefined> {
   if (value) await chrome.storage.session.remove('pendingPair');
 }
 
-async function pairAt(target: { apiUrl: string; webUrl: string }, code: string) {
-  if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) throw new Error('Approve server access in the extension Settings first.');
+// Serialize account writes so a late sign-in or failed old request cannot restore
+// an account after sign-out, or clear a newly connected account.
+function mutateConnection<T>(action: () => Promise<T>): Promise<T> {
+  const result = connectionMutation.then(action, action);
+  connectionMutation = result.catch(() => {});
+  return result;
+}
+
+async function announceAccountChange() {
+  await chrome.storage.session.clear();
+  await chrome.storage.session.set({ connectionChanged: crypto.randomUUID() });
+  for (const tab of await chrome.tabs.query({})) if (tab.id) void chrome.tabs.sendMessage(tab.id, { type: 'accountChanged' }).catch(() => {});
+}
+
+async function forgetConnection(expectedToken?: string): Promise<boolean> {
+  return mutateConnection(async () => {
+    const current = await connection();
+    if (expectedToken !== undefined && current.token !== expectedToken) return false;
+    connectionOperation++;
+    accountEpoch++;
+    const { token: _token, account: _account, ...next } = current;
+    await chrome.storage.local.set({ connection: next });
+    await announceAccountChange();
+    return true;
+  });
+}
+
+async function revokeConnection(config: Connection) {
+  if (!config.token) return;
+  await fetch(`${normalizeOrigin(config.apiUrl)}/api/extension/token`, {
+    method: 'DELETE', headers: { Authorization: `Bearer ${config.token}` },
+    credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(8000),
+  }).catch(() => {});
+}
+
+async function disconnect(config: Connection) {
+  // Signing out must work offline too. Revoke the captured old token separately.
+  if (await forgetConnection(config.token)) void revokeConnection(config);
+}
+
+function accountFrom(value: unknown): Account {
+  const data = value as Partial<Account> | undefined;
+  if (!data || typeof data.id !== 'string' || !data.id || typeof data.email !== 'string') throw new Error('Could not confirm your account. Please try again.');
+  return { id: data.id, name: typeof data.name === 'string' ? data.name : '', email: data.email };
+}
+
+async function connectionStatus() {
+  const c = await connection();
+  const pending = await pendingPair();
+  const base = { apiUrl: pending?.apiUrl || c.apiUrl, webUrl: pending?.webUrl || c.webUrl, pendingPair: Boolean(pending) };
+  if (!c.token) return { ...base, connected: false, account: undefined, unavailable: false };
+  if (!(await chrome.permissions.contains({ origins: [hostPattern(c.apiUrl)] }))) {
+    await disconnect(c);
+    return { ...base, connected: false, account: undefined, unavailable: false };
+  }
+  try {
+    const account = accountFrom(await request('/api/me'));
+    await mutateConnection(async () => {
+      const current = await connection();
+      if (current.token === c.token) await chrome.storage.local.set({ connection: { ...current, account } });
+    });
+    const current = await connection();
+    if (current.token !== c.token) return { ...base, connected: false, account: undefined, unavailable: false };
+    return { ...base, connected: true, account, unavailable: false };
+  } catch {
+    const current = await connection();
+    return { ...base, connected: Boolean(current.token), account: current.account, unavailable: Boolean(current.token) };
+  }
+}
+
+async function pairAt(target: { apiUrl: string; webUrl: string }, code: string, operation = ++connectionOperation, accountId?: string) {
+  activePair = { operation, accountId, apiUrl: target.apiUrl };
+  if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) throw new Error('Choose Connect account in the extension and approve website access.');
   const response = await fetch(`${normalizeOrigin(target.apiUrl)}/api/extension/exchange`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code }),
     credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20000),
   });
   const result = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(typeof result.message === 'string' ? result.message.slice(0, 300) : 'Could not connect. Generate a fresh code on the website.');
+  if (!response.ok) throw new Error(typeof result.message === 'string' ? result.message.slice(0, 300) : 'Could not connect. Choose Connect account to try again.');
   if (typeof result.token !== 'string' || !/^cb_ext_[A-Za-z0-9_-]{20,200}$/.test(result.token)) throw new Error('The server returned an invalid connection token.');
-  accountEpoch++;
-  await chrome.storage.session.clear();
-  await chrome.storage.local.set({ connection: { apiUrl: target.apiUrl, webUrl: target.webUrl, token: result.token } });
-  await chrome.storage.session.set({ connectionChanged: Date.now() });
-  for (const tab of await chrome.tabs.query({})) if (tab.id) void chrome.tabs.sendMessage(tab.id, { type: 'accountChanged' }).catch(() => {});
+  const next: Connection = { ...target, token: result.token };
+  try {
+    const identity = await fetch(`${normalizeOrigin(target.apiUrl)}/api/me`, {
+      headers: { Authorization: `Bearer ${result.token}` }, credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(20000),
+    });
+    if (!identity.ok) throw new Error('Could not confirm your account. Choose Connect account to try again.');
+    next.account = accountFrom(await identity.json());
+    if (accountId && next.account.id !== accountId) throw new Error('Your account changed. Choose Connect account to try again.');
+    await mutateConnection(async () => {
+      if (operation !== connectionOperation) throw new Error('Your connection changed. Choose Connect account to try again.');
+      const previous = await connection();
+      accountEpoch++;
+      await chrome.storage.local.set({ connection: next });
+      await announceAccountChange();
+      void revokeConnection(previous);
+    });
+  } catch (error) {
+    void revokeConnection(next);
+    throw error;
+  } finally {
+    if (activePair?.operation === operation) activePair = undefined;
+  }
 }
 
 chrome.runtime.onMessageExternal.addListener((message, sender, respond) => {
   void (async () => {
     const target = externalPairTarget(sender.url || '', sender.origin, sender.frameId);
-    const code = externalPairCode(message);
-    if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) {
-      await chrome.storage.session.set({ pendingPair: { ...target, code, expiresAt: Date.now() + 4 * 60_000 } });
-      await chrome.runtime.openOptionsPage();
-      return { ok: true, status: 'permission_required', message: 'Finish linking in the opened extension Settings: click Connect to this server and approve access. No code pasting is needed.' };
+    if (message?.type === 'CB_STATUS' || message?.type === 'CB_DISCONNECT') {
+      const command = externalAccountMessage(message);
+      if (command.type === 'CB_DISCONNECT') {
+        await mutateConnection(async () => {
+          if (activePair?.apiUrl === target.apiUrl && activePair.accountId === command.accountId) {
+            connectionOperation++;
+            activePair = undefined;
+          }
+          const pending = await pendingPair();
+          if (pending?.apiUrl === target.apiUrl && pending.accountId === command.accountId) await chrome.storage.session.remove('pendingPair');
+        });
+      }
+      const c = await connection();
+      if (c.apiUrl !== target.apiUrl || !c.token) return { ok: true, status: 'disconnected' };
+      // Cached identity is trusted extension-only data and lets explicit sign-out
+      // clear locally even while the backend is temporarily unreachable.
+      if (command.type === 'CB_DISCONNECT' && c.account?.id === command.accountId) {
+        await disconnect(c);
+        return { ok: true, status: 'disconnected' };
+      }
+      const status = await connectionStatus();
+      if (status.unavailable) return { ok: true, status: 'unavailable' };
+      if (!status.connected || status.account?.id !== command.accountId) return { ok: true, status: 'disconnected' };
+      if (command.type === 'CB_DISCONNECT') {
+        await disconnect(c);
+        return { ok: true, status: 'disconnected' };
+      }
+      return { ok: true, status: 'connected' };
     }
-    await pairAt(target, code);
+    const code = externalPairCode(message);
+    const operation = ++connectionOperation;
+    const accountId = typeof message.accountId === 'string' ? message.accountId : undefined;
+    activePair = { operation, accountId, apiUrl: target.apiUrl };
+    if (!(await chrome.permissions.contains({ origins: [hostPattern(target.apiUrl)] }))) {
+      await mutateConnection(async () => {
+        if (operation !== connectionOperation) throw new Error('Your connection changed. Please try again.');
+        await chrome.storage.session.set({ pendingPair: { ...target, code, accountId, expiresAt: Date.now() + 4 * 60_000 } });
+      });
+      await chrome.runtime.openOptionsPage();
+      return { ok: true, status: 'permission_required', message: 'Choose Connect account in the extension to approve website access and finish connecting.' };
+    }
+    await pairAt(target, code, operation, accountId);
     return { ok: true, status: 'connected', message: 'Your ContextBridge account is connected to the extension.' };
   })().then(respond).catch((error) => respond({ ok: false, error: error instanceof Error ? error.message : 'Could not connect the extension.' }));
   return true;
@@ -191,10 +315,10 @@ async function request(path: string, method = 'GET', body?: unknown) {
   }
   const config = await connection();
   if (!config.token && !['/api/config', '/api/extension/exchange'].includes(path)) {
-    throw new Error('Link your account with a one-time code in Settings first.');
+    throw new Error('Choose Connect account to sign in and use your library.');
   }
   if (!(await chrome.permissions.contains({ origins: [hostPattern(config.apiUrl)] }))) {
-    throw new Error('Connect to your server in Settings to allow access.');
+    throw new Error('Choose Connect account and approve website access.');
   }
   if (epoch !== accountEpoch) throw new Error('Your account changed. Please retry this action.');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -206,11 +330,15 @@ async function request(path: string, method = 'GET', body?: unknown) {
       credentials: 'omit', redirect: 'error', signal: AbortSignal.timeout(60000),
     });
   } catch {
-    throw new Error('Could not reach your server. Check the server address and try again. Your draft is still here.');
+    throw new Error('Could not reach ContextBridge. Check your internet connection and try again. Your draft is still here.');
   }
   const data = await response.json().catch(() => ({}));
+  if (epoch !== accountEpoch || (await connection()).token !== config.token) throw new Error('Your account changed. Please retry this action.');
   if (!response.ok) {
-    if (response.status === 401) throw new Error('Sign in on the website and connect a new pairing code in Settings.');
+    if (response.status === 401 || response.status === 403) {
+      if (config.token) await forgetConnection(config.token);
+      throw new Error('You’re signed out. Choose Connect account to sign in again.');
+    }
     throw new Error(typeof data.message === 'string' ? data.message.slice(0, 500) : `Request failed (${response.status}). Please retry.`);
   }
   return data;
@@ -232,35 +360,33 @@ chrome.runtime.onMessage.addListener((message, sender, respond: (value: Reply<un
   if (!trusted) return false;
   const task = async () => {
     switch (message.type) {
-      case 'connection': {
-        const c = await connection();
-        return { apiUrl: c.apiUrl, webUrl: c.webUrl, connected: Boolean(c.token), pendingPair: Boolean(await pendingPair()) };
-      }
-      case 'configure': {
-        const previous = await connection();
-        const next: Connection = { apiUrl: normalizeOrigin(message.apiUrl), webUrl: normalizeOrigin(message.webUrl) };
-        if (next.apiUrl === previous.apiUrl) next.token = previous.token;
-        await chrome.storage.local.set({ connection: next });
+      case 'connection': return connectionStatus();
+      case 'beginConnect': {
         const pending = await pendingPair();
-        if (pending && (pending.apiUrl !== next.apiUrl || pending.webUrl !== next.webUrl)) await chrome.storage.session.remove('pendingPair');
-        return { ok: true };
-      }
-      case 'completePair': {
-        const pending = await pendingPair(); if (!pending) return { connected: false };
-        await pairAt(pending, pending.code); return { connected: true };
-      }
-      case 'pair': {
-        const c = await connection();
-        await pairAt({ apiUrl: c.apiUrl, webUrl: c.webUrl }, String(message.code || '').trim());
-        return { ok: true };
+        if (pending) {
+          try {
+            await pairAt(pending, pending.code, ++connectionOperation, pending.accountId);
+            return { connected: true };
+          } catch {
+            // A pending one-time code can expire while the permission prompt is
+            // open. Start a fresh website connection without asking for a code.
+            await chrome.storage.session.remove('pendingPair');
+          }
+        }
+        const stored = await connection();
+        const c = pending ? { ...stored, apiUrl: pending.apiUrl, webUrl: pending.webUrl } : stored;
+        if (!(await chrome.permissions.contains({ origins: [hostPattern(c.apiUrl)] }))) throw new Error('Approve website access to connect your account.');
+        const url = `${normalizeOrigin(c.webUrl)}/?connect=extension`;
+        const previous = (await chrome.storage.session.get('connectTabId')).connectTabId;
+        if (typeof previous === 'number') {
+          try { await chrome.tabs.update(previous, { url, active: true }); return { connected: false }; } catch { /* Closed tabs are replaced below. */ }
+        }
+        const tab = await chrome.tabs.create({ url });
+        if (tab.id) await chrome.storage.session.set({ connectTabId: tab.id });
+        return { connected: false };
       }
       case 'disconnect': {
-        // Revoke remotely before forgetting the local token; errors remain visible.
-        const c = await connection();
-        if (c.token) await request('/api/extension/token', 'DELETE');
-        delete c.token;
-        await chrome.storage.local.set({ connection: c });
-        await chrome.storage.session.remove(['draft', 'selection', 'pendingPair']);
+        await disconnect(await connection());
         return { ok: true };
       }
       case 'api': return request(String(message.path || ''), message.method, message.body);

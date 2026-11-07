@@ -94,7 +94,7 @@ if (!window.__contextBridgeAttached) {
       mode = settings.mode;
       const radio = shadow.querySelector<HTMLInputElement>(`input[name="cb-mode"][value="${mode}"]`); if (radio) radio.checked = true;
       status(`${settings.learningLanguage} → ${settings.translationLanguage} · Shared learning preferences`);
-    }).catch((error) => status(`${error.message} Open the side panel’s Settings to connect.`, true));
+    }).catch((error) => status(`${error.message} Open the side panel to connect your account.`, true));
   }
   function showAffordance() {
     if (busy || expanded) return;

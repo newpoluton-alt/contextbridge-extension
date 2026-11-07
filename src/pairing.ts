@@ -16,7 +16,16 @@ export function externalPairTarget(senderUrl: string, senderOrigin?: string, fra
 export function externalPairCode(message: unknown): string {
   if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid connection request.');
   const value = message as Record<string, unknown>;
-  if (value.type !== 'CB_PAIR' || Object.keys(value).some((key) => !['type', 'code'].includes(key))) throw new Error('Unsupported connection request.');
+  if (value.type !== 'CB_PAIR' || Object.keys(value).some((key) => !['type', 'code', 'accountId'].includes(key))) throw new Error('Unsupported connection request.');
   if (typeof value.code !== 'string' || !/^[A-Za-z0-9_-]{20,100}$/.test(value.code)) throw new Error('The one-time connection code is invalid.');
+  if (value.accountId !== undefined && (typeof value.accountId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(value.accountId))) throw new Error('The account is invalid.');
   return value.code;
+}
+
+export function externalAccountMessage(message: unknown): { type: 'CB_STATUS' | 'CB_DISCONNECT'; accountId: string } {
+  if (!message || typeof message !== 'object' || Array.isArray(message)) throw new Error('Invalid account request.');
+  const value = message as Record<string, unknown>;
+  if (!['CB_STATUS', 'CB_DISCONNECT'].includes(String(value.type)) || Object.keys(value).some((key) => !['type', 'accountId'].includes(key))) throw new Error('Unsupported account request.');
+  if (typeof value.accountId !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(value.accountId)) throw new Error('The account is invalid.');
+  return { type: value.type as 'CB_STATUS' | 'CB_DISCONNECT', accountId: value.accountId };
 }

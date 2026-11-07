@@ -1,8 +1,8 @@
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import { hostPattern, normalizeOrigin, validateSelection } from './selection';
+import { hostPattern, validateSelection } from './selection';
 import { matchingEncounter } from './overlay';
-import type { Chat, Encounter, Lookup, Mode, PublicConfig, Reply, Selection, Settings } from './types';
+import type { Account, Chat, Encounter, Lookup, Mode, PublicConfig, Reply, Selection, Settings } from './types';
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const input = (id: string) => $<HTMLInputElement>(id);
@@ -23,6 +23,8 @@ let accountEpoch = 0;
 let draft: Draft = freshDraft();
 let config: PublicConfig | undefined;
 let connected = false;
+let connectionApiUrl = __API_URL__;
+let connectionRefresh = 0;
 let busy = false;
 let revision = 0;
 let activeView: View = location.hash === '#settings' ? 'settings' : 'explore';
@@ -140,23 +142,36 @@ async function switchView(view: View) {
     if (button.dataset.view === view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current');
   });
   location.hash = view;
-  if (view === 'library' && config) await refreshLibrary();
-  if (view === 'chat' && config) await loadChats();
+  if (view === 'library' && config && connected) await refreshLibrary();
+  if (view === 'chat' && config && connected) await loadChats();
   if (view === 'settings' && config && connected) await loadPreferences();
 }
 
 async function refreshConnection() {
-  const info = await send<{ apiUrl: string; webUrl: string; connected: boolean; pendingPair?: boolean }>({ type: 'connection' });
-  input('api-url').value = info.apiUrl; input('web-url').value = info.webUrl;
-  connected = info.connected;
+  const version = ++connectionRefresh;
+  const info = await send<{ apiUrl: string; webUrl: string; connected: boolean; account?: Account; unavailable?: boolean; pendingPair?: boolean }>({ type: 'connection' });
+  if (version !== connectionRefresh) return;
+  connectionApiUrl = info.apiUrl;
+  connected = info.connected && !info.pendingPair;
+  show('connect-account', !connected);
   show('disconnect', connected);
-  if (info.pendingPair) notify('Your website connection is ready. Click “Connect to this server” to approve access and finish linking your account.');
-  const hasPermission = await chrome.permissions.contains({ origins: [hostPattern(info.apiUrl)] });
-  if (!hasPermission) return;
+  show('account-email', connected && Boolean(info.account?.email));
+  text('account-email', info.account?.email || '');
+  text('account-heading', connected ? 'Signed in' : 'Connect your account');
+  text('account-description', connected
+    ? info.unavailable ? 'You’re offline. Your account is still connected. Try again when your connection returns.' : 'Connected to your website account. Your library and chats stay in sync.'
+    : info.pendingPair ? 'Your account is ready. Connect below to finish.' : 'Sign in or create an account on the website. We’ll connect you automatically.');
+  $('account-card').classList.toggle('is-connected', connected);
+  show('settings-form', connected);
+  show('usage-card', connected);
+  text('connection-state', connected ? info.unavailable ? 'Connected · Waiting for internet' : 'Connected to your website account' : 'Not signed in');
+  $('connection-state').classList.remove('demo');
+  if (!connected || info.unavailable) return;
   config = await api<PublicConfig>('/api/config');
+  if (version !== connectionRefresh) return;
   $('connection-state').classList.toggle('demo', config.demo);
-  text('connection-state', connected ? config.demo ? 'LOCAL DEMO · Saved on this computer' : 'Connected · Your library stays in sync' : 'Sign in on the website, then enter a pairing code');
-  if (connected) await loadPreferences();
+  if (config.demo) text('connection-state', 'LOCAL DEMO · Saved on this computer');
+  await loadPreferences();
 }
 
 async function loadPreferences(force = false) {
@@ -333,27 +348,19 @@ $('clear').addEventListener('click', () => { revision++; draft = freshDraft(); s
 $('capture').addEventListener('click', () => { void run(async () => { await send({ type: 'captureCurrent' }); notify('If nothing appears, select text on the page and click the extension icon once to activate it.'); }); });
 $('open-pdf').addEventListener('click', () => { void run(async () => { await send({ type: 'openPdf' }); }); });
 for (const id of ['open-web', 'review-web']) $(id).addEventListener('click', () => { void run(async () => { await send({ type: 'openWeb' }); }); });
-$('sign-in-web').addEventListener('click', () => { void run(async () => { await send({ type: 'openWeb', settings: true }); }); });
-$('connection-form').addEventListener('submit', (event) => {
-  event.preventDefault();
-  let apiUrl: string; let webUrl: string;
-  try { apiUrl = normalizeOrigin(input('api-url').value); webUrl = normalizeOrigin(input('web-url').value); }
-  catch (error) { notify((error as Error).message, true); return; }
-  // Request directly in the event handler to retain Chrome's user gesture.
-  const permission = chrome.permissions.request({ origins: [hostPattern(apiUrl)] });
+$('connect-account').addEventListener('click', () => {
+  if (busy) return;
+  // Chrome needs the permission request directly in this click handler.
+  const permission = chrome.permissions.request({ origins: [hostPattern(connectionApiUrl)] });
   void run(async () => {
-    if (!(await permission)) throw new Error('Server permission was declined. You can connect again whenever you’re ready.');
-    await send({ type: 'configure', apiUrl, webUrl });
-    const pairing = await send<{ connected: boolean }>({ type: 'completePair' }); await refreshConnection();
-    notify(pairing.connected ? 'Account connected directly from the website. Your library and chats are ready.' : 'Server connected. Connect directly from the website Settings, or paste a one-time code below.');
+    if (!(await permission)) throw new Error('Website access was declined. Choose Connect account whenever you’re ready.');
+    const result = await send<{ connected: boolean }>({ type: 'beginConnect' });
+    await refreshConnection();
+    if (!result.connected) text('account-description', 'Finish signing in on the website. This panel updates automatically when you’re connected.');
   });
 });
-$('pair-form').addEventListener('submit', (event) => { event.preventDefault(); void run(async () => {
-  await send({ type: 'pair', code: input('pair-code').value }); input('pair-code').value = '';
-  await refreshConnection(); notify('Account connected. Your saved expressions, chats, and preferences are ready.');
-}); });
 $('disconnect').addEventListener('click', () => { void run(async () => {
-  await send({ type: 'disconnect' }); draft = freshDraft(); currentChat = undefined; preferences = undefined; settingsDirty = false; $<HTMLFormElement>('settings-form').reset(); setForm(); await refreshConnection(); notify('This extension is disconnected.');
+  await send({ type: 'disconnect' }); await refreshConnection();
 }); });
 $('settings-form').addEventListener('input', () => { settingsDirty = true; });
 $('settings-form').addEventListener('submit', (event) => { event.preventDefault(); void run(async () => {
@@ -410,12 +417,13 @@ $('chat-form').addEventListener('submit', (event) => { event.preventDefault(); v
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'session') return;
   if (changes.connectionChanged?.newValue) {
-    accountEpoch++; revision++; currentChat = undefined; chats = []; library = []; preferences = undefined; settingsDirty = false;
-    draft = freshDraft(); input('chat-input').value = ''; $('library-list').replaceChildren();
+    accountEpoch++; connectionRefresh++; revision++; currentChat = undefined; chats = []; library = []; preferences = undefined; settingsDirty = false;
+    connected = false; config = undefined; draft = freshDraft(); input('chat-input').value = ''; $('library-list').replaceChildren();
+    show('error', false); show('notice', false); show('usage-summary', false);
     $<HTMLSelectElement>('chat-history').replaceChildren(new Option('New conversation', ''));
     $<HTMLFormElement>('settings-form').reset(); setForm(); renderChat();
     void refreshConnection().then(() => { if (activeView === 'library' || activeView === 'chat') return switchView(activeView); }).catch((error) => notify(error.message, true));
-  } else if (changes.pendingPair?.newValue) void refreshConnection().catch((error) => notify(error.message, true));
+  } else if ('pendingPair' in changes) void refreshConnection().catch((error) => notify(error.message, true));
   if (changes.selection?.newValue || (changes.draft?.newValue && changes.panelTarget?.newValue)) {
     const selection = (changes.selection?.newValue || (changes.draft.newValue as Draft).selection) as Selection;
     if (selection.capturedAt === draft.selection.capturedAt && !changes.panelTarget?.newValue) return;
@@ -439,5 +447,14 @@ async function init() {
   await chrome.storage.session.remove('panelTarget');
   try { await refreshConnection(); if (activeView === 'library' || activeView === 'chat') await switchView(activeView); } catch (error) { notify((error as Error).message, true); }
 }
-window.addEventListener('focus', () => { if (activeView === 'settings' && connected && !busy) void loadPreferences().catch(() => {}); });
+let lastConnectionCheck = 0;
+function checkConnection() {
+  if (document.visibilityState !== 'visible' || busy || Date.now() - lastConnectionCheck < 1500) return;
+  lastConnectionCheck = Date.now();
+  void refreshConnection().catch((error) => notify(error.message, true));
+}
+window.addEventListener('focus', checkConnection);
+document.addEventListener('visibilitychange', checkConnection);
+// No AI calls: a visible panel checks only the account endpoint for expiry.
+setInterval(checkConnection, 30000);
 void init().catch((error) => notify(error instanceof Error ? error.message : 'Could not open the extension. Please reload it.', true));
