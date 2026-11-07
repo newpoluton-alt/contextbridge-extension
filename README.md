@@ -23,9 +23,9 @@ A Chrome Manifest V3 extension for Windows, macOS, and Linux. Select a word or s
 
 ## 🔗 Connect the deployed app
 
-The packaged extension defaults to [ContextBridge](https://contextbridge-newpoluton.vercel.app). Open it and choose **Connect account**. Approve Chrome’s website-access prompt if it appears, then sign in or create an account on the website. The connection finishes automatically. The extension shows **Signed in** and your email, and the Connect button disappears.
+The packaged extension defaults to [ContextBridge](https://contextbridge-newpoluton.vercel.app). Open its **Settings** tab and choose **Connect account**. Approve Chrome’s website-access prompt if it appears, then sign in or create an account on the website. The connection finishes automatically. The account card in **Settings** shows **Signed in** and your email, and the Connect button disappears.
 
-Signing out on the website also signs out this browser’s connected extension. You can also choose **Sign out of extension** in its account card. When the connection expires, **Connect account** returns. A temporary internet outage keeps the existing account connected and shows an offline message.
+Signing out on the website also signs out this browser’s connected extension. You can also choose **Sign out of extension** in the **Settings** account card. When the connection expires, **Connect account** returns in **Settings**. A temporary internet outage keeps the existing account connected and shows an offline message.
 
 For an existing unpacked installation, download the updated ZIP, replace the files in the folder you originally loaded, and click **Reload** for ContextBridge in `chrome://extensions`. The extension keeps its stable ID and recognizes existing connected accounts.
 
@@ -34,8 +34,8 @@ For an existing unpacked installation, download the updated ZIP, replace the fil
 1. Start the separate `web` project (`npm run dev` in that folder).
 2. In this folder run `npm install`. Set `CONTEXTBRIDGE_API_URL=http://localhost:3000` and `CONTEXTBRIDGE_WEB_URL=http://localhost:5173` in the ignored `.env`, then run `npm run build`.
 3. Open `chrome://extensions`, enable **Developer mode**, click **Load unpacked**, and choose this project's `dist` folder. Pin ContextBridge in the Chrome toolbar.
-4. Choose **Connect account** in the extension and approve the requested website access.
-5. Sign in on the website (or use its explicitly labeled local demo). The extension connects automatically, then displays the connected account. Behind the scenes, the website supplies a single-use code that expires after five minutes. The extension exchanges it for its own account-scoped token, which lasts up to 30 days. Users never need to copy a code or enter server addresses.
+4. Open the extension’s **Settings** tab, choose **Connect account**, and approve the requested website access.
+5. Sign in on the website (or use its explicitly labeled local demo). The extension connects automatically, then displays the connected account in **Settings**. Behind the scenes, the website supplies a single-use code that expires after five minutes. The extension exchanges it for its own account-scoped token, which lasts up to 30 days. Users never need to copy a code or enter server addresses.
 6. On an ordinary webpage, select a short expression and click the toolbar icon, or use **Explore with ContextBridge** in the right-click menu. After activation, selecting text on that page also offers a small **Explore** button.
 
 The server's keyless local demo supports these exact examples. It does not invent answers for other text:
@@ -85,7 +85,7 @@ Only the two explicitly public URL variables are read by the build. Rebuild afte
 
 1. Deploy the web app and configure its server-side credentials using that project's deployment workflow.
 2. In `chrome://extensions`, copy ContextBridge's extension ID. Add that ID to the web server's `EXTENSION_IDS` environment variable (comma-separated if more than one) and redeploy. Local demo mode permits local Chrome extension origins automatically; production requires the explicit allowlist.
-3. Set the extension’s public `.env` URLs to the HTTPS website origin before building. For a separately hosted website, update the exact trusted origins in `src/pairing.ts` and `public/manifest.json`, and the extension ID in the website bridge if needed. Load the build, choose **Connect account**, approve website access, and sign in.
+3. Set the extension’s public `.env` URLs to the HTTPS website origin before building. For a separately hosted website, update the exact trusted origins in `src/pairing.ts` and `public/manifest.json`, and the extension ID in the website bridge if needed. Load the build, open **Settings**, choose **Connect account**, approve website access, and sign in.
 
 This package includes a fixed public manifest key, so its unpacked ID remains **dfpafpdmlhafhpknaijeeelhdpbkiogk** across install locations and operating systems. No private signing key is shipped. If a future Chrome Web Store listing receives a different key/ID, update the server allowlist for that release.
 

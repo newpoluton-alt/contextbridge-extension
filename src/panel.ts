@@ -164,7 +164,7 @@ async function refreshConnection() {
   $('account-card').classList.toggle('is-connected', connected);
   show('settings-form', connected);
   show('usage-card', connected);
-  text('connection-state', connected ? info.unavailable ? 'Connected · Waiting for internet' : 'Connected to your website account' : 'Not signed in');
+  text('connection-state', connected ? info.unavailable ? 'Connected · Waiting for internet' : 'Connected to your website account' : 'Not signed in · Connect in Settings');
   $('connection-state').classList.remove('demo');
   if (!connected || info.unavailable) return;
   config = await api<PublicConfig>('/api/config');

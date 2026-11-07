@@ -315,10 +315,10 @@ async function request(path: string, method = 'GET', body?: unknown) {
   }
   const config = await connection();
   if (!config.token && !['/api/config', '/api/extension/exchange'].includes(path)) {
-    throw new Error('Choose Connect account to sign in and use your library.');
+    throw new Error('Open Settings and choose Connect account to sign in and use your library.');
   }
   if (!(await chrome.permissions.contains({ origins: [hostPattern(config.apiUrl)] }))) {
-    throw new Error('Choose Connect account and approve website access.');
+    throw new Error('Open Settings, choose Connect account, and approve website access.');
   }
   if (epoch !== accountEpoch) throw new Error('Your account changed. Please retry this action.');
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -337,7 +337,7 @@ async function request(path: string, method = 'GET', body?: unknown) {
   if (!response.ok) {
     if (response.status === 401 || response.status === 403) {
       if (config.token) await forgetConnection(config.token);
-      throw new Error('You’re signed out. Choose Connect account to sign in again.');
+      throw new Error('You’re signed out. Open Settings and choose Connect account to sign in again.');
     }
     throw new Error(typeof data.message === 'string' ? data.message.slice(0, 500) : `Request failed (${response.status}). Please retry.`);
   }
